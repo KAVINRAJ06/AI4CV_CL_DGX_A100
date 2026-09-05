@@ -1,0 +1,19 @@
+# Source data and generated experiment artifacts
+A100_datasets/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# Python/build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+Thumbs.db

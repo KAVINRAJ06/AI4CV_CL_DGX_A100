@@ -1,0 +1,4 @@
+name: openearthmap_then_landcoverai
+tasks:
+  - ../datasets/openearthmap.yaml
+  - ../datasets/landcoverai.yaml
