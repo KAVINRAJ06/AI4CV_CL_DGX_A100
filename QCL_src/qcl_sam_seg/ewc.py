@@ -40,7 +40,7 @@ class OnlineEWC:
 
 def estimate_fisher(model, loader, head_id: str, criterion, device: torch.device, max_batches: int = 32) -> dict[str, torch.Tensor]:
     model.eval()
-    total = {name: torch.zeros_like(param, device=device) for name, param in model.quantum.named_parameters()}
+    total = {name: torch.zeros_like(param) for name, param in model.quantum.named_parameters()}
     count = 0
     for batch in loader:
         model.zero_grad(set_to_none=True)
