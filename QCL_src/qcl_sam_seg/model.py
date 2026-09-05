@@ -75,11 +75,17 @@ class FrozenSAM(nn.Module):
         # Dataset tensors are RGB floats in [0, 1]. SAM owns its pixel
         # normalization/padding, so do not feed it ImageNet-normalized data.
         embedding = self.sam.image_encoder(self.sam.preprocess(image * 255.0))
-        batch = image.shape[0]
-        sparse = embedding.new_zeros(batch, 0, embedding.shape[1])
-        dense = self.sam.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand_as(embedding)
-        masks, _ = self.sam.mask_decoder(embedding, self.sam.prompt_encoder.get_dense_pe(), sparse, dense, multimask_output=True)
-        return embedding, masks
+        # SAM's MaskDecoder pairs one image embedding with one prompt set. Its
+        # internal repeat_interleave is not batch-wise when B images and B empty
+        # prompt sets are supplied together, so decode each frozen image feature
+        # independently before concatenating the resulting mask priors.
+        priors = []
+        for one_embedding in embedding.split(1, dim=0):
+            sparse = one_embedding.new_zeros(1, 0, one_embedding.shape[1])
+            dense = self.sam.prompt_encoder.no_mask_embed.weight.reshape(1, -1, 1, 1).expand_as(one_embedding)
+            masks, _ = self.sam.mask_decoder(one_embedding, self.sam.prompt_encoder.get_dense_pe(), sparse, dense, multimask_output=True)
+            priors.append(masks)
+        return embedding, torch.cat(priors, dim=0)
 
 
 class UniversalQCLSAM(nn.Module):

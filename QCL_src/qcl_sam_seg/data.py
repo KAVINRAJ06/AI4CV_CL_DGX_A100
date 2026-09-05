@@ -60,6 +60,8 @@ def validate_dataset(cfg: dict, splits: Iterable[str] = ("train", "val", "test")
     raw_allowed = {int(k) for k in cfg["dataset"]["label_map"]}
     for split in splits:
         records = discover_split(cfg, split)
+        if not records:
+            raise ValueError(f"{split}: no usable image/mask pairs were found. Provide this split's RGB images or configure a non-overlapping split.")
         all_ids[split] = {record.sample_id for record in records}
         for record in records[: cfg["dataset"].get("validation_scan_limit", 32)]:
             labels = _read_mask(record, cfg)
