@@ -61,3 +61,22 @@ CUDA_VISIBLE_DEVICES=0 python -m qcl_sam_seg train \\
   --stream configs/streams/openearthmap_then_landcoverai.yaml \\
   2>&1 | tee dgx_training.log
 ```
+
+
+## DGX performance controls
+
+The DGX notebook enables `model.sam_precision: bfloat16` for the frozen SAM forward pass and `training.num_workers: 4` with pinned memory and prefetching. SAM outputs are converted back to float32 before the quantum branch and semantic head. Ordinary YAML runs retain float32 SAM and zero workers unless configured. Set workers to zero if the server lacks sufficient shared memory.
+
+Metrics now stay on the prediction device and retain the existing definitions (including the one-pixel boundary metric). Batch progress prints on the first batch, every 25 batches, and the last batch, with end-to-end seconds per batch and ETA. Epoch history is saved after each epoch. Fisher accumulators follow each parameter's device, fixing the CPU quantum/CUDA projection mismatch.
+
+The notebook enables `model.residual_scale: 0.1`: the head receives SAM spatial features plus 0.1 times the quantum adaptation. The previous architecture discarded the direct SAM feature path after pooling to an 8x8 quantum grid. This is an architecture change intended to preserve detail; accuracy gains must be measured. Set residual_scale to 0 for the legacy architecture, including when evaluating old checkpoints. Evaluate new checkpoints with their saved run configs.
+
+SAM remains frozen, but its features are recomputed; no feature cache or multi-GPU training is introduced. Batch size and image resolution are unchanged. BF16 and worker loading follow [PyTorch's performance guidance](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html) and [autocast documentation](https://docs.pytorch.org/docs/stable/amp.html).
+
+Run regressions in the project environment:
+```bash
+cd QCL_src
+python -m unittest discover -s tests -p test_dgx_optimization.py -v
+```
+
+The notebook runs these checks before training. They cover metric parity, residual gradient flow, frozen SAM behavior through a test double, and mixed-device Fisher estimation (CUDA tests skip without CUDA). A real SAM/A100 speed and quality benchmark is still required. Do not compare the residual architecture to an old checkpoint without its original config.
