@@ -42,7 +42,7 @@ class QuantumBottleneck(nn.Module):
         angles = torch.tanh(self.encode(tokens)) * math.pi
         # Tensor copies preserve autograd. Only the small 8-value token vector
         # crosses devices; frozen SAM and the semantic head remain on the GPU.
-        measured = self.q_layer(angles.flatten(0, 1).to("cpu")).reshape_as(angles.to("cpu")).to(features.device)
+        measured = self.q_layer(angles.flatten(0, 1).to("cpu")).reshape(angles.shape).to(features.device)
         restored = self.decode(measured).transpose(1, 2).reshape(features.shape[0], -1, self.token_grid, self.token_grid)
         return F.interpolate(restored, size=size, mode="bilinear", align_corners=False)
 
@@ -62,7 +62,7 @@ class TinyFrozenSAM(nn.Module):
 
 
 class FrozenSAM(nn.Module):
-    def __init__(self, checkpoint: str, model_type: str = "vit_b"):
+    def __init__(self, checkpoint: str, model_type: str = "vit_b", precision: str = "float32"):
         super().__init__()
         try:
             from segment_anything import sam_model_registry
@@ -76,6 +76,9 @@ class FrozenSAM(nn.Module):
         for param in self.sam.parameters():
             param.requires_grad = False
         self.sam.eval()
+        if precision not in ("float32", "bfloat16"):
+            raise ValueError("sam_precision must be float32 or bfloat16")
+        self.precision = precision
 
     def train(self, mode: bool = True):
         super().train(False)
@@ -83,6 +86,15 @@ class FrozenSAM(nn.Module):
 
     @torch.no_grad()
     def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        enabled = self.precision == "bfloat16" and image.device.type == "cuda"
+        if enabled and not torch.cuda.is_bf16_supported():
+            raise RuntimeError("BF16 is unsupported on this GPU; set sam_precision: float32")
+        with torch.autocast(device_type=image.device.type, dtype=torch.bfloat16, enabled=enabled):
+            embedding, priors = self._encode(image)
+        # Keep the trainable projections and quantum simulator in float32.
+        return embedding.float(), priors.float()
+
+    def _encode(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # Dataset tensors are RGB floats in [0, 1]. SAM owns its pixel
         # normalization/padding, so do not feed it ImageNet-normalized data.
         embedding = self.sam.image_encoder(self.sam.preprocess(image * 255.0))
@@ -100,8 +112,9 @@ class FrozenSAM(nn.Module):
 
 
 class UniversalQCLSAM(nn.Module):
-    def __init__(self, backbone: nn.Module, quantum: QuantumBottleneck, head_classes: dict[str, int], channels: int = 256):
+    def __init__(self, backbone: nn.Module, quantum: QuantumBottleneck, head_classes: dict[str, int], channels: int = 256, residual_scale: float = 0.0):
         super().__init__()
+        self.residual_scale = float(residual_scale)
         self.backbone, self.quantum = backbone, quantum
         self.semantic_heads = nn.ModuleDict({name: nn.Sequential(nn.Conv2d(channels + 3, channels, 3, padding=1), nn.GELU(), nn.Conv2d(channels, count, 1)) for name, count in head_classes.items()})
 
@@ -115,6 +128,8 @@ class UniversalQCLSAM(nn.Module):
     def forward(self, image: torch.Tensor, head_id: str) -> tuple[torch.Tensor, torch.Tensor]:
         features, priors = self.backbone(image)
         adapted = self.quantum(features)
+        if self.residual_scale:
+            adapted = features + self.residual_scale * adapted
         priors = F.interpolate(priors, size=adapted.shape[-2:], mode="bilinear", align_corners=False)
         logits = self.semantic_heads[head_id](torch.cat((adapted, priors), dim=1))
         return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False), adapted
@@ -125,6 +140,6 @@ def make_model(model_cfg: dict, head_classes: dict[str, int]) -> UniversalQCLSAM
     if model_cfg.get("backbone", "sam_vit_b") == "tiny_frozen":
         backbone = TinyFrozenSAM(channels)
     else:
-        backbone = FrozenSAM(model_cfg["sam_checkpoint"], model_cfg.get("sam_model_type", "vit_b"))
+        backbone = FrozenSAM(model_cfg["sam_checkpoint"], model_cfg.get("sam_model_type", "vit_b"), model_cfg.get("sam_precision", "float32"))
     quantum = QuantumBottleneck(channels, int(model_cfg.get("qubits", 8)), int(model_cfg.get("quantum_layers", 4)), int(model_cfg.get("token_grid", 8)))
-    return UniversalQCLSAM(backbone, quantum, head_classes, channels)
+    return UniversalQCLSAM(backbone, quantum, head_classes, channels, float(model_cfg.get("residual_scale", 0.0)))
