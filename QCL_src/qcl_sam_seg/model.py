@@ -29,11 +29,19 @@ class QuantumBottleneck(nn.Module):
 
         self.q_layer = qml.qnn.TorchLayer(circuit, {"weights": (layers, qubits, 3)})
 
+    def _apply(self, fn):
+        """Keep default.qubit parameters on CPU; it cannot execute CUDA tensors."""
+        super()._apply(fn)
+        self.q_layer.to(torch.device("cpu"))
+        return self
+
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         size = features.shape[-2:]
         tokens = F.adaptive_avg_pool2d(features, (self.token_grid, self.token_grid)).flatten(2).transpose(1, 2)
         angles = torch.tanh(self.encode(tokens)) * math.pi
-        measured = self.q_layer(angles.flatten(0, 1)).reshape_as(angles)
+        # Tensor copies preserve autograd. Only the small 8-value token vector
+        # crosses devices; frozen SAM and the semantic head remain on the GPU.
+        measured = self.q_layer(angles.flatten(0, 1).to("cpu")).reshape_as(angles.to("cpu")).to(features.device)
         restored = self.decode(measured).transpose(1, 2).reshape(features.shape[0], -1, self.token_grid, self.token_grid)
         return F.interpolate(restored, size=size, mode="bilinear", align_corners=False)
 

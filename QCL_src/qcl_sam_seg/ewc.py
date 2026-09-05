@@ -11,9 +11,18 @@ class OnlineEWC:
         self.means: dict[str, torch.Tensor] = {}
 
     def penalty(self, module: nn.Module) -> torch.Tensor:
+        parameters = list(module.parameters())
         if not self.fisher:
-            return next(module.parameters()).new_zeros(())
-        return sum((self.fisher[name].to(param.device) * (param - self.means[name].to(param.device)).pow(2)).sum() for name, param in module.named_parameters() if name in self.fisher)
+            return parameters[0].new_zeros(())
+        # The PennyLane default simulator stays on CPU while projections run on
+        # CUDA. Reduce every term on the projection device before summing.
+        target_device = parameters[0].device
+        result = torch.zeros((), device=target_device)
+        for name, param in module.named_parameters():
+            if name in self.fisher:
+                term = (self.fisher[name].to(param.device) * (param - self.means[name].to(param.device)).pow(2)).sum()
+                result = result + term.to(target_device)
+        return result
 
     @torch.no_grad()
     def snapshot(self, module: nn.Module, fisher: dict[str, torch.Tensor]) -> None:
