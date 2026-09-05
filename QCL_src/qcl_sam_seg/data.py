@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,8 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-from .config import resolve_path
+from .config import hashlib
+import resolve_path
 
 
 @dataclass(frozen=True)
@@ -42,17 +44,35 @@ def _landcover(root: Path, item: str) -> Sample:
 def discover_split(cfg: dict, split: str) -> list[Sample]:
     ds = cfg["dataset"]
     root = resolve_path(cfg, ds["root"])
-    manifest = resolve_path(cfg, ds["splits"][split])
+    split_spec = ds["splits"][split]
+    split_spec = {"manifest": split_spec} if isinstance(split_spec, str) else split_spec
+    manifest = resolve_path(cfg, split_spec["manifest"])
     kind = ds["kind"]
     resolver = _openearthmap if kind == "openearthmap" else _landcover if kind == "landcoverai" else None
     if resolver is None:
         raise ValueError(f"Unsupported dataset.kind: {kind}")
     samples = [resolver(root, item) for item in _lines(manifest)]
-    missing = [s.sample_id for s in samples if not s.image.is_file() or not s.mask.is_file()]
-    if missing:
-        raise FileNotFoundError(f"{split}: {len(missing)} missing pairs; first: {missing[:3]}")
+    missing = [sample for sample in samples if not sample.image.is_file() or not sample.mask.is_file()]
+    if missing and not split_spec.get("available_only", False):
+        raise FileNotFoundError(f"{split}: {len(missing)} missing pairs; first: {[s.sample_id for s in missing[:3]]}")
+    if split_spec.get("available_only", False):
+        samples = [sample for sample in samples if sample not in missing]
+    partition = split_spec.get("partition")
+    if partition:
+        fraction = float(split_spec.get("holdout_fraction", 0.15))
+        if not 0 < fraction < 1:
+            raise ValueError("holdout_fraction must be between 0 and 1")
+        seed = str(split_spec.get("seed", 42))
+        def in_holdout(sample: Sample) -> bool:
+            value = int.from_bytes(hashlib.sha256(f"{seed}:{sample.sample_id}".encode()).digest()[:8], "big") / 2**64
+            return value < fraction
+        if partition == "train":
+            samples = [sample for sample in samples if not in_holdout(sample)]
+        elif partition == "test":
+            samples = [sample for sample in samples if in_holdout(sample)]
+        else:
+            raise ValueError("partition must be 'train' or 'test'")
     return samples
-
 
 def validate_dataset(cfg: dict, splits: Iterable[str] = ("train", "val", "test")) -> dict:
     all_ids: dict[str, set[str]] = {}

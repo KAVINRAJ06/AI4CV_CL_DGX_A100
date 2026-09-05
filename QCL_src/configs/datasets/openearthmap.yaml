@@ -5,10 +5,25 @@ task:
 dataset:
   kind: openearthmap
   root: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD
+  # The _wo_xBD package retains manifests for xBD tiles whose RGB imagery is
+  # intentionally absent. Keep only available pairs. The holdout comes from
+  # available official-train records because official test contains only xBD.
   splits:
-    train: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/train.txt
-    val: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/val.txt
-    test: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/test.txt
+    train:
+      manifest: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/train.txt
+      available_only: true
+      partition: train
+      holdout_fraction: 0.15
+      seed: 42
+    val:
+      manifest: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/val.txt
+      available_only: true
+    test:
+      manifest: ../../../A100_datasets/openearthmap/OpenEarthMap_wo_xBD/train.txt
+      available_only: true
+      partition: test
+      holdout_fraction: 0.15
+      seed: 42
   classes: [background, bareland, rangeland, developed_space, road, tree, water, agriculture_land, building]
   label_map: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8}
   ignore_index: 255
