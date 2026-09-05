@@ -18,3 +18,11 @@ python -m qcl_sam_seg predict --config configs/datasets/openearthmap.yaml --chec
 The supplied data configs preserve their native label spaces: OpenEarthMap has nine IDs (`0..8`) and LandCover.ai has five (`0..4`). Consequently, each task gets a distinct semantic head while the quantum bottleneck is shared and EWC-protected. Edit a dataset YAML—not source code—when introducing another satellite dataset or its label map.
 
 The shipped configurations intentionally keep RGB tensors in `[0, 1]`: the frozen SAM wrapper applies SAM's own normalization and padding before encoding. Do not change these to ImageNet statistics unless replacing the SAM backbone.
+
+## SAM checkpoint
+
+Download the SAM ViT-B checkpoint once and set `SAM_CHECKPOINT` before validation or training. The dataset YAMLs intentionally resolve this environment variable, avoiding machine-specific paths:
+
+```bash
+export SAM_CHECKPOINT=/raid/workspace/AI4CV/models/sam_vit_b_01ec64.pth
+```

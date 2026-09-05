@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -67,8 +68,9 @@ class FrozenSAM(nn.Module):
             from segment_anything import sam_model_registry
         except ImportError as exc:
             raise ImportError("Install segment-anything to use SAM ViT-B") from exc
+        checkpoint = os.path.expandvars(checkpoint)
         if not Path(checkpoint).is_file():
-            raise FileNotFoundError(f"SAM checkpoint not found: {checkpoint}")
+            raise FileNotFoundError(f"SAM checkpoint not found: {checkpoint}. Set SAM_CHECKPOINT to the local sam_vit_b_01ec64.pth path.")
         self.sam = sam_model_registry[model_type](checkpoint=checkpoint)
         for param in self.sam.parameters():
             param.requires_grad = False
