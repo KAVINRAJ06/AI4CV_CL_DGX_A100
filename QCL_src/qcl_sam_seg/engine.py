@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -14,17 +15,28 @@ from .metrics import SegmentationMetrics
 from .visualize import prediction_panel, tsne_plot
 
 
-def loaders(cfg: dict, workers: int = 0):
-    batch = int(cfg["training"].get("batch_size", 2))
-    return {split: DataLoader(SegmentationDataset(cfg, split, augment=split == "train"), batch_size=batch, shuffle=split == "train", num_workers=workers) for split in ("train", "val", "test")}
+def loaders(cfg: dict, workers: int | None = None):
+    options = cfg["training"]
+    batch = int(options.get("batch_size", 2))
+    workers = int(options.get("num_workers", 0)) if workers is None else workers
+    kwargs = dict(num_workers=workers, pin_memory=bool(options.get("pin_memory", torch.cuda.is_available())))
+    if workers > 0:
+        kwargs.update(prefetch_factor=int(options.get("prefetch_factor", 2)),
+                      persistent_workers=bool(options.get("persistent_workers", False)))
+    return {split: DataLoader(SegmentationDataset(cfg, split, augment=split == "train"),
+                             batch_size=batch, shuffle=split == "train", **kwargs)
+            for split in ("train", "val", "test")}
 
 
-def run_epoch(model, loader, head_id, criterion, device, optimizer=None, ewc=None, ewc_lambda=0.0, classes=2, ignore_index=255):
+def run_epoch(model, loader, head_id, criterion, device, optimizer=None, ewc=None, ewc_lambda=0.0, classes=2, ignore_index=255, log_interval=25):
     training = optimizer is not None
     model.train(training)
     metric, loss_total, samples = SegmentationMetrics(classes, ignore_index), 0.0, 0
-    for batch in loader:
-        images, masks = batch["image"].to(device), batch["mask"].to(device)
+    started = time.perf_counter()
+    stage = "train" if training else "eval"
+    print(f"{head_id} {stage}: {len(loader.dataset)} samples, {len(loader)} batches", flush=True)
+    for step, batch in enumerate(loader, 1):
+        images, masks = batch["image"].to(device, non_blocking=True), batch["mask"].to(device, non_blocking=True)
         with torch.set_grad_enabled(training):
             logits, _ = model(images, head_id)
             loss = criterion(logits, masks)
@@ -37,8 +49,16 @@ def run_epoch(model, loader, head_id, criterion, device, optimizer=None, ewc=Non
         metric.update(logits, masks)
         loss_total += float(loss.detach()) * images.shape[0]
         samples += images.shape[0]
+        if step == 1 or step == len(loader) or (log_interval > 0 and step % log_interval == 0):
+            elapsed = time.perf_counter() - started
+            eta = elapsed / step * (len(loader) - step)
+            print(f"{head_id} {stage} batch {step}/{len(loader)} | "
+                  f"loss {loss_total / samples:.4f} | {elapsed / step:.2f} s/batch | "
+                  f"ETA {eta / 60:.1f} min", flush=True)
     result = metric.compute()
     result["loss"] = loss_total / max(samples, 1)
+    result["seconds"] = time.perf_counter() - started
+    result["samples_per_second"] = samples / max(result["seconds"], 1e-9)
     return result
 
 
@@ -55,6 +75,7 @@ def _write_metrics_csv(path: Path, metrics: dict) -> None:
 
 def train_task(model, cfg, ewc: OnlineEWC, device, output: Path, previous_best: dict[str, dict]) -> tuple[dict, dict]:
     output.mkdir(parents=True, exist_ok=True)
+    print(f"Starting task {cfg['task']['name']} on {device}", flush=True)
     head_id = cfg["task"]["head_id"]
     classes, ignore = len(cfg["dataset"]["classes"]), int(cfg["dataset"].get("ignore_index", 255))
     model.add_head(head_id, classes)
@@ -68,6 +89,7 @@ def train_task(model, cfg, ewc: OnlineEWC, device, output: Path, previous_best: 
         val = run_epoch(model, ds_loaders["val"], head_id, criterion, device, classes=classes, ignore_index=ignore)
         row = {"epoch": epoch, "train": train, "val": val}
         history.append(row)
+        _write_json(output / "history.json", history)
         line = f"{cfg['task']['name']} | epoch [{epoch}/{cfg['training']['epochs']}] : {train['accuracy']:.4f} / {val['accuracy']:.4f} | {train['loss']:.4f} / {val['loss']:.4f} | {train['miou']:.4f} / {val['miou']:.4f} | {train['dice']:.4f} / {val['dice']:.4f} | mIoU {val['miou']:.4f} | bIoU {val['biou']:.4f} | Dice {val['dice']:.4f}"
         print(line)
         with (output / "train.log").open("a", encoding="utf-8") as stream: stream.write(line + "\n")
