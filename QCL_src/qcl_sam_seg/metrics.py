@@ -12,8 +12,12 @@ class SegmentationMetrics:
         self.boundary_union = torch.zeros(classes, dtype=torch.float64)
 
     def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
-        prediction = logits.argmax(1).detach().cpu()
-        target = target.detach().cpu()
+        prediction = logits.argmax(1).detach()
+        target = target.detach().to(prediction.device)
+        if self.cm.device != prediction.device:
+            self.cm = self.cm.to(prediction.device)
+            self.boundary_intersection = self.boundary_intersection.to(prediction.device)
+            self.boundary_union = self.boundary_union.to(prediction.device)
         valid = target != self.ignore_index
         encoded = self.classes * target[valid].long() + prediction[valid].long()
         self.cm += torch.bincount(encoded, minlength=self.classes ** 2).reshape(self.classes, self.classes)
