@@ -11,8 +11,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-from .config import hashlib
-import resolve_path
+from .config import resolve_path
 
 
 @dataclass(frozen=True)
